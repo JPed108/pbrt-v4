@@ -282,6 +282,143 @@ PBRT_CPU_GPU CoatedDiffuseBxDF CoatedDiffuseMaterial::GetBxDF(TextureEvaluator t
                              a, gg, maxDepth, nSamples);
 }
 
+std::string OrenNayarMaterial::ToString() const {
+    return "OrenNayarMaterial";
+}
+
+OrenNayarMaterial *OrenNayarMaterial::Create(const TextureParameterDictionary &parameters,
+                                             Image *normalMap, const FileLoc *loc,
+                                             Allocator alloc) {
+    SpectrumTexture reflectance = parameters.GetSpectrumTexture(
+        "reflectance", nullptr, SpectrumType::Albedo, alloc);
+
+    if (!reflectance)
+        reflectance = alloc.new_object<SpectrumConstantTexture>(
+            alloc.new_object<ConstantSpectrum>(0.5f));
+
+    FloatTexture sigma = parameters.GetFloatTexture("sigma", 0.f, alloc);
+
+    FloatTexture displacement = parameters.GetFloatTextureOrNull("displacement", alloc);
+
+    return alloc.new_object<OrenNayarMaterial>(reflectance, sigma, displacement,
+                                               normalMap);
+}
+
+double u_gamma2(double a, double x) {
+    const double EPS = 1e-12;
+    const double TINY = 1e-30;
+    const int MAX_ITER = 100;
+
+    if (x <= 0.0)
+        return 0.0;
+
+    double factor = std::exp(-x + a * std::log(x));
+
+    double b = x + 1.0 - a;
+    double f = (std::abs(b) < TINY) ? TINY : b;
+    double C = f;
+    double D = 0.0;
+    double delta;
+
+    for (int i = 1; i <= MAX_ITER; ++i) {
+        double ai = -i * (i - a);
+        b += 2.0;
+
+        D = b + ai * D;
+        if (std::abs(D) < TINY)
+            D = TINY;
+        D = 1.0 / D;
+
+        C = b + ai / C;
+        if (std::abs(C) < TINY)
+            C = TINY;
+
+        delta = C * D;
+        f *= delta;
+
+        if (std::abs(delta - 1.0) < EPS) {
+            return 1.0 / f * factor;
+        }
+    }
+    return 1 / f * factor;
+}
+
+double u_gamma3(double a, double x) {
+    double factor = std::exp(-x + a * std::log(x));
+
+    double term = 1.0 / a;
+    double sum = term;
+    const double EPS = 1E-12;
+
+    for (int i = 1; i < 100; ++i) {
+        term *= x / (a + i);
+        sum += term;
+        if (std::abs(term) < std::abs(sum) * EPS) {
+            return sum * factor;
+        }
+    }
+    return sum * factor;
+}
+
+double u_gamma(double a, double x) {
+    if (x >= a + 1 || a <= 0)
+        return u_gamma2(a, x);
+    else
+        return std::tgamma(a) - u_gamma3(a, x);
+}
+
+BagherMaterial *BagherMaterial::Create(const TextureParameterDictionary &parameters,
+                                       Image *normalMap, const FileLoc *loc,
+                                       Allocator alloc) {
+    float p = parameters.GetOneFloat("p", 0.3f);
+    float alpha = parameters.GetOneFloat("alpha", 0.1f);
+    float lambda = parameters.GetOneFloat("lambda", 0.3f);
+    float C = parameters.GetOneFloat("C", 0.1f);
+    float K = parameters.GetOneFloat("K", 0.1f);
+    float F0 = parameters.GetOneFloat("F0", 10.0f);
+    float F1 = parameters.GetOneFloat("F1", 10.0f);
+    SpectrumTexture rho_d =
+        parameters.GetSpectrumTexture("rho_d", nullptr, SpectrumType::Albedo, alloc);
+    SpectrumTexture rho_s =
+        parameters.GetSpectrumTexture("rho_s", nullptr, SpectrumType::Albedo, alloc);
+
+    double gamma = u_gamma(1 - p, alpha);
+    double gamma_factor = std::pow(alpha, p - 1.0) / gamma;
+
+    printf("Gamma: %f\n", gamma);
+    printf("Gamma_factor: %f\n\n", gamma_factor);
+    return alloc.new_object<BagherMaterial>(p, alpha, lambda, C, K, F0, F1, rho_d, rho_s,
+                                            gamma_factor);
+}
+
+BagherOrenNayarMaterial *BagherOrenNayarMaterial::Create(
+    const TextureParameterDictionary &parameters,
+                                       Image *normalMap, const FileLoc *loc,
+                                       Allocator alloc) {
+    float p = parameters.GetOneFloat("p", 0.3f);
+    float alpha = parameters.GetOneFloat("alpha", 0.1f);
+    float lambda = parameters.GetOneFloat("lambda", 0.3f);
+    float C = parameters.GetOneFloat("C", 0.1f);
+    float K = parameters.GetOneFloat("K", 0.1f);
+    float F0 = parameters.GetOneFloat("F0", 10.0f);
+    float F1 = parameters.GetOneFloat("F1", 10.0f);
+    FloatTexture sigma = parameters.GetFloatTexture("sigma", 0.f, alloc);
+    SpectrumTexture rho_d =
+        parameters.GetSpectrumTexture("rho_d", nullptr, SpectrumType::Albedo, alloc);
+    SpectrumTexture rho_s =
+        parameters.GetSpectrumTexture("rho_s", nullptr, SpectrumType::Albedo, alloc);
+
+    double gamma = u_gamma(1 - p, alpha);
+    double gamma_factor = std::pow(alpha, p - 1.0) / gamma;
+
+    printf("Gamma: %f\n", gamma);
+    printf("Gamma_factor: %f\n\n", gamma_factor);
+    return alloc.new_object<BagherOrenNayarMaterial>(p, alpha, lambda, C, K, F0, F1,
+                                                     rho_d, rho_s,
+                                            gamma_factor, sigma);
+}
+
+
 // Explicit template instantiation
 template PBRT_CPU_GPU CoatedDiffuseBxDF CoatedDiffuseMaterial::GetBxDF(
     BasicTextureEvaluator, const MaterialEvalContext &ctx,
@@ -679,7 +816,14 @@ Material Material::Create(const std::string &name,
                           "the \"mix\" material.", materialNames[i]);
         }
         material = MixMaterial::Create(materials, parameters, loc, alloc);
-    } else
+    } 
+    else if (name == "orennayar")
+        material = OrenNayarMaterial::Create(parameters, normalMap, loc, alloc);  
+    else if (name == "baghermaterial")
+        material = BagherMaterial::Create(parameters, normalMap, loc, alloc);
+    else if (name == "BagherOrenNayarMaterial")
+        material = BagherOrenNayarMaterial::Create(parameters, normalMap, loc, alloc);
+    else
         ErrorExit(loc, "%s: material type unknown.", name);
 
     if (!material)

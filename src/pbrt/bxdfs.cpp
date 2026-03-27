@@ -271,6 +271,11 @@ std::string ConductorBxDF::ToString() const {
                         k);
 }
 
+std::string OrenNayarBxDF::ToString() const {
+    return StringPrintf("[ OrenNayarBxDF R: %s A: %f B: %f ]", R.ToString().c_str(), A,
+                        B);
+}
+
 // HairBxDF Method Definitions
 PBRT_CPU_GPU HairBxDF::HairBxDF(Float h, Float eta, const SampledSpectrum &sigma_a, Float beta_m,
                    Float beta_n, Float alpha)
@@ -364,6 +369,7 @@ PBRT_CPU_GPU SampledSpectrum HairBxDF::f(Vector3f wo, Vector3f wi, TransportMode
     DCHECK(!IsInf(fsum.Average()) && !IsNaN(fsum.Average()));
     return fsum;
 }
+
 
 PBRT_CPU_GPU pstd::array<Float, HairBxDF::pMax + 1> HairBxDF::ApPDF(Float cosTheta_o) const {
     // Initialize array of $A_p$ values for _cosTheta_o_

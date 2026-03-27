@@ -891,6 +891,190 @@ class MeasuredMaterial {
     const MeasuredBxDFData *brdf;
 };
 
+// Oren-Nayar material definition
+class OrenNayarMaterial {
+  public:
+    static const char *Name() { return "OrenNayarMaterial"; }
+    using BxDF = OrenNayarBxDF;
+    using BSSRDF = void;
+
+    OrenNayarMaterial(SpectrumTexture reflectance, FloatTexture sigma,
+                      FloatTexture displacement, Image *normalMap)
+        : reflectance(reflectance),
+          sigma(sigma),
+          displacement(displacement),
+          normalMap(normalMap) {}
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU OrenNayarBxDF GetBxDF(TextureEvaluator texEval,
+                                       const MaterialEvalContext &ctx,
+                                       SampledWavelengths &lambda) const {
+        SampledSpectrum r = Clamp(texEval(reflectance, ctx, lambda), 0, 1);
+        Float s = texEval(sigma, ctx);
+        return OrenNayarBxDF(r, s);
+    }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU BSDF GetBSDF(TextureEvaluator texEval, const MaterialEvalContext &ctx,
+                              SampledWavelengths &lambda,
+                              ScratchBuffer &scratchBuffer) const {
+        OrenNayarBxDF *bxdf =
+            scratchBuffer.Alloc<OrenNayarBxDF>(GetBxDF(texEval, ctx, lambda));
+        return BSDF(ctx.ns, ctx.dpdus, bxdf);
+    }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU void GetBSSRDF(TextureEvaluator texEval, const MaterialEvalContext &ctx,
+                                SampledWavelengths &lambda) const {}
+
+    PBRT_CPU_GPU bool HasSubsurfaceScattering() const { return false; }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU bool CanEvaluateTextures(TextureEvaluator texEval) const {
+        return texEval.CanEvaluate({sigma}, {reflectance});
+    }
+
+    PBRT_CPU_GPU FloatTexture GetDisplacement() const { return displacement; }
+    PBRT_CPU_GPU const Image *GetNormalMap() const { return normalMap; }
+
+    static OrenNayarMaterial *Create(const TextureParameterDictionary &parameters,
+                                     Image *normalMap, const FileLoc *loc,
+                                     Allocator alloc);
+
+    std::string ToString() const;
+
+  private:
+    SpectrumTexture reflectance;
+    FloatTexture sigma;
+    FloatTexture displacement;
+    Image *normalMap;
+};
+
+// Bagher material Definition
+
+class BagherMaterial {
+  public:
+    BagherMaterial(Float p, Float alpha, Float lambda, Float C, Float K, Float F0,
+                   Float F1, SpectrumTexture rho_d, SpectrumTexture rho_s, Float gamma)
+        : p(p),
+          alpha(alpha),
+          lambda(lambda),
+          C(C),
+          K(K),
+          F0(F0),
+          F1(F1),
+          rho_d(rho_d),
+          rho_s(rho_s),
+          gamma(gamma) {}
+
+    using BxDF = BagherBxDF;
+    using BSSRDF = void;  // Set to void if no subsurface scattering
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU BagherBxDF GetBxDF(TextureEvaluator texEval, MaterialEvalContext ctx,
+                                    SampledWavelengths &wl) const {
+        // Evaluate the texture at the current point
+        SampledSpectrum rd = texEval(rho_d, ctx, wl);
+        SampledSpectrum rs = texEval(rho_s, ctx, wl);
+
+        // Return your initialized BxDF
+        return BagherBxDF(p, alpha, lambda, C, K, F0, F1, rd, rs, gamma);
+    }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU bool CanEvaluateTextures(TextureEvaluator texEval) const {
+        return true;
+    }
+
+    PBRT_CPU_GPU FloatTexture GetDisplacement() const { return nullptr; }
+    PBRT_CPU_GPU const Image *GetNormalMap() const { return nullptr; }
+
+    static BagherMaterial *Create(const TextureParameterDictionary &parameters,
+                                  Image *normalMap, const FileLoc *loc, Allocator alloc);
+
+    PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+    static const char *Name() { return "baghermaterial"; }
+    std::string ToString() const { return "baghermaterial[]"; }
+
+  private:
+    Float p;
+    Float alpha;
+    Float lambda;
+    Float C;
+    Float K;
+    Float F0;
+    Float F1;
+    SpectrumTexture rho_d;
+    SpectrumTexture rho_s;
+    Float gamma;
+};
+
+// Bagher + Oren Nayar material
+
+class BagherOrenNayarMaterial {
+  public:
+    BagherOrenNayarMaterial(Float p, Float alpha, Float lambda, Float C, Float K,
+                            Float F0, Float F1, SpectrumTexture rho_d,
+                            SpectrumTexture rho_s, Float gamma, FloatTexture sigma)
+        : p(p),
+          alpha(alpha),
+          lambda(lambda),
+          C(C),
+          K(K),
+          F0(F0),
+          F1(F1),
+          rho_d(rho_d),
+          rho_s(rho_s),
+          gamma(gamma),
+          sigma(sigma) {}
+
+    using BxDF = Bagher_OrenNayar_BxDF;
+    using BSSRDF = void; 
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU Bagher_OrenNayar_BxDF GetBxDF(TextureEvaluator texEval,
+                                               MaterialEvalContext ctx,
+                                    SampledWavelengths &wl) const {
+        // Evaluate the texture at the current point
+        SampledSpectrum rd = texEval(rho_d, ctx, wl);
+        SampledSpectrum rs = texEval(rho_s, ctx, wl);
+        Float s = texEval(sigma, ctx);
+
+        // Return your initialized BxDF
+        return Bagher_OrenNayar_BxDF(p, alpha, lambda, C, K, F0, F1, rd, rs, gamma, s);
+    }
+
+    template <typename TextureEvaluator>
+    PBRT_CPU_GPU bool CanEvaluateTextures(TextureEvaluator texEval) const {
+        return true;
+    }
+
+    PBRT_CPU_GPU FloatTexture GetDisplacement() const { return nullptr; }
+    PBRT_CPU_GPU const Image *GetNormalMap() const { return nullptr; }
+
+    static BagherOrenNayarMaterial *Create(const TextureParameterDictionary &parameters,
+                                  Image *normalMap, const FileLoc *loc, Allocator alloc);
+
+    PBRT_CPU_GPU static constexpr bool HasSubsurfaceScattering() { return false; }
+    static const char *Name() { return "BagherOrenNayarMaterial"; }
+    std::string ToString() const { return "BagherOrenNayarMaterial[]"; }
+
+  private:
+    Float p;
+    Float alpha;
+    Float lambda;
+    Float C;
+    Float K;
+    Float F0;
+    Float F1;
+    SpectrumTexture rho_d;
+    SpectrumTexture rho_s;
+    Float gamma;
+    FloatTexture sigma;
+};
+
+
+
 // Material Inline Method Definitions
 template <typename TextureEvaluator>
 inline BSDF Material::GetBSDF(TextureEvaluator texEval, MaterialEvalContext ctx,

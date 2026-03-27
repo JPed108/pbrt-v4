@@ -161,12 +161,16 @@ class ConductorBxDF;
 class NormalizedFresnelBxDF;
 class CoatedDiffuseBxDF;
 class CoatedConductorBxDF;
+class BagherBxDF;
+class OrenNayarBxDF;
+class Bagher_OrenNayar_BxDF;
 
 // BxDF Definition
 class BxDF
     : public TaggedPointer<DiffuseTransmissionBxDF, DiffuseBxDF, CoatedDiffuseBxDF,
                            CoatedConductorBxDF, DielectricBxDF, ThinDielectricBxDF,
-                           HairBxDF, MeasuredBxDF, ConductorBxDF, NormalizedFresnelBxDF> {
+                           HairBxDF, MeasuredBxDF, ConductorBxDF, NormalizedFresnelBxDF, 
+                           BagherBxDF, OrenNayarBxDF, Bagher_OrenNayar_BxDF> {
   public:
     // BxDF Interface
     PBRT_CPU_GPU inline BxDFFlags Flags() const;

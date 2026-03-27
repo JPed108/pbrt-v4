@@ -30,13 +30,17 @@ class MeasuredMaterial;
 class SubsurfaceMaterial;
 class ThinDielectricMaterial;
 class MixMaterial;
+class BagherMaterial;
+class OrenNayarMaterial;
+class BagherOrenNayarMaterial;
 
 // Material Definition
 class Material
     : public TaggedPointer<  // Material Types
           CoatedDiffuseMaterial, CoatedConductorMaterial, ConductorMaterial,
           DielectricMaterial, DiffuseMaterial, DiffuseTransmissionMaterial, HairMaterial,
-          MeasuredMaterial, SubsurfaceMaterial, ThinDielectricMaterial, MixMaterial
+          MeasuredMaterial, SubsurfaceMaterial, ThinDielectricMaterial, MixMaterial, 
+          BagherMaterial, OrenNayarMaterial, BagherOrenNayarMaterial
 
           > {
   public:

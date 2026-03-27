@@ -532,6 +532,8 @@ endif()
 ###########################################################################
 # On to pbrt...
 
+file (GLOB PBRT_BASE_HEADERS "src/pbrt/base/*.h")
+
 set (PBRT_SOURCE
   src/pbrt/bsdf.cpp
   src/pbrt/bssrdf.cpp
@@ -849,6 +851,7 @@ add_library (pbrt_lib STATIC
   ${PBRT_WAVEFRONT_SOURCE_HEADERS}
   ${PBRT_GPU_SOURCE}
   ${PBRT_GPU_SOURCE_HEADERS}
+  ${PBRT_BASE_HEADERS}
 
   src/ext/gtest/gtest-all.cc
   src/ext/lodepng/lodepng.cpp

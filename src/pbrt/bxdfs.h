@@ -1131,6 +1131,400 @@ class NormalizedFresnelBxDF {
     Float eta;
 };
 
+// Oren-Nayar brdf implementation
+
+class OrenNayarBxDF {
+  public:
+    OrenNayarBxDF() = default;
+
+    PBRT_CPU_GPU
+    OrenNayarBxDF(const SampledSpectrum &R, Float sigma) : R(R) {
+        Float sigmaRad = Radians(sigma);
+        Float sigma2 = sigmaRad * sigmaRad;
+        A = 1 - (sigma2 / (2 * (sigma2 + 0.33f)));
+        B = 0.45f * sigma2 / (sigma2 + 0.09f);
+    }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode) const {
+        if (!SameHemisphere(wo, wi))
+            return SampledSpectrum(0);
+
+        Float sinThetaI = SinTheta(wi);
+        Float sinThetaO = SinTheta(wo);
+
+        Float maxCos = 0;
+        if (sinThetaI > 1e-4f && sinThetaO > 1e-4f) {
+            Float sinPhiI = SinPhi(wi), cosPhiI = CosPhi(wi);
+            Float sinPhiO = SinPhi(wo), cosPhiO = CosPhi(wo);
+            maxCos = std::max<Float>(0, cosPhiI * cosPhiO + sinPhiI * sinPhiO);
+        }
+
+        Float sinAlpha, tanBeta;
+        if (AbsCosTheta(wi) > AbsCosTheta(wo)) {
+            sinAlpha = sinThetaO;
+            tanBeta = sinThetaI / AbsCosTheta(wi);
+        } else {
+            sinAlpha = sinThetaI;
+            tanBeta = sinThetaO / AbsCosTheta(wo);
+        }
+
+        return R * InvPi * (A + B * maxCos * sinAlpha * tanBeta);
+    }
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(
+        Vector3f wo, Float uc, Point2f u, TransportMode mode,
+        BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection))
+            return {};
+
+        Vector3f wi = SampleCosineHemisphere(u);
+        if (wo.z < 0)
+            wi.z *= -1;
+
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+        return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode,
+              BxDFReflTransFlags sampleFlags = BxDFReflTransFlags::All) const {
+        if (!(sampleFlags & BxDFReflTransFlags::Reflection) || !SameHemisphere(wo, wi))
+            return 0;
+        return CosineHemispherePDF(AbsCosTheta(wi));
+    }
+
+    // Necessario para o TaggedPointer no pbrt-v4
+    std::string ToString() const;
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "OrenNayarBxDF"; }
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return R ? BxDFFlags::DiffuseReflection : BxDFFlags::Unset;
+    }
+
+  private:
+    SampledSpectrum R;
+    Float A, B;
+};
+
+// Bagher et al. brdf implementation
+
+class BagherBxDF {
+  public:
+    // NormalizedFresnelBxDF Public Methods
+    BagherBxDF() = default;
+    PBRT_CPU_GPU
+    BagherBxDF(Float p, Float alpha, Float lambda, Float C, Float K, Float F0, Float F1,
+               SampledSpectrum &rho_d, SampledSpectrum &rho_s, Float gamma_factor)
+        : p(p),
+          alpha(alpha),
+          lambda(lambda),
+          C(C),
+          K(K),
+          F0(F0),
+          F1(F1),
+          rho_d(rho_d),
+          rho_s(rho_s),
+          gamma_factor(gamma_factor) {}
+
+    PBRT_CPU_GPU
+    float Fresnel(float u) const {
+        return F0 + (1.0f - F0) * std::pow(1.0f - u, 5) - (F1 * u);
+    }
+
+    PBRT_CPU_GPU
+    float P22(float x) const {
+        if (alpha == 0)
+            return 1E30;
+        // std::numeric_limits<float>::max();
+        // Float result = std::exp(-1 * (x / alpha)) / std::pow(x + alpha * alpha, p);
+        // return result;
+
+        float exponent = -((alpha * alpha + x) / alpha);
+        float value =
+            gamma_factor * std::exp(exponent) / std::pow(x + (alpha * alpha), p);
+
+        return value;
+    }
+
+    PBRT_CPU_GPU
+    float SGD(float theta_h) const {
+        if (theta_h >= 0 && theta_h < Pi / 2.0f) {
+            float cosH = std::cos(theta_h);  // 1
+            float tanH = std::tan(theta_h);  // 0
+            auto value = InvPi / (cosH * cosH * cosH * cosH) * P22(tanH * tanH);
+            return value;
+        }
+        return 0.0f;
+    }
+
+    PBRT_CPU_GPU
+    float G1(float theta) const {
+        float theta_0 =
+            (Pi / 2.0f) - std::pow(std::log(1.0f + (1.0f / lambda)) / C, 1.0f / K);
+        if (theta > theta_0)
+            return 1.0f + (lambda * (1.0f - std::exp(C * std::pow(theta - theta_0, K))));
+        return 1.0f;
+    }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+        if (!SameHemisphere(wo, wi))
+            return SampledSpectrum(0.f);
+        Vector3f wh = wo + wi;
+        if (wh.x == 0 && wh.y == 0 && wh.z == 0)
+            return SampledSpectrum(0.0f);
+
+        wh = Normalize(wh);
+
+        float cosThetaH = AbsCosTheta(wh);
+        float cosThetaI = AbsCosTheta(wi);
+        float cosThetaO = AbsCosTheta(wo);
+
+        if (cosThetaI < 1e-6f || cosThetaO < 1e-6f)
+            return SampledSpectrum(0.0f);
+
+        float dotLH = AbsDot(wi, wh);
+
+        float theta_h = std::acos(Clamp(cosThetaH, -1, 1));
+        float theta_i = std::acos(Clamp(cosThetaI, -1, 1));
+        float theta_o = std::acos(Clamp(cosThetaO, -1, 1));
+
+        float F = Fresnel(dotLH);
+        float D = SGD(theta_h);
+        float G = G1(theta_i) * G1(theta_o);
+
+        SampledSpectrum diffuse = rho_d * InvPi;
+        SampledSpectrum specular =
+            (rho_s * InvPi) * (F * D * G / (cosThetaI * cosThetaO));
+
+        return diffuse + specular;
+    }
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(Vector3f wo, Float uc, Point2f u,
+                                        TransportMode mode,
+                                        BxDFReflTransFlags sampleFlags) const {
+        Vector3f wi = SampleCosineHemisphere(u);
+        if (wo.z < 0)
+            wi.z *= -1;
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+        return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags) const {
+        if (!SameHemisphere(wo, wi))
+            return 0;
+        return AbsCosTheta(wi) * InvPi;
+    }
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "BagherBxDF"; }
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return BxDFFlags(BxDFFlags::Reflection | BxDFFlags::DiffuseReflection);
+    }
+
+    std::string ToString() const { return "BagherBxDF[]"; }
+
+  private:
+    Float p;
+    Float alpha;
+    Float lambda;
+    Float C;
+    Float K;
+    Float F0;
+    Float F1;
+    SampledSpectrum rho_d;
+    SampledSpectrum rho_s;
+    Float gamma_factor;
+};
+
+class Bagher_OrenNayar_BxDF {
+  public:
+    // NormalizedFresnelBxDF Public Methods
+    Bagher_OrenNayar_BxDF() = default;
+    PBRT_CPU_GPU
+    Bagher_OrenNayar_BxDF(Float p, Float alpha, Float lambda, Float C, Float K, Float F0,
+                          Float F1, SampledSpectrum &rho_d, SampledSpectrum &rho_s,
+                          Float gamma_factor, Float sigma)
+        : p(p),
+          alpha(alpha),
+          lambda(lambda),
+          C(C),
+          K(K),
+          F0(F0),
+          F1(F1),
+          rho_d(rho_d),
+          rho_s(rho_s),
+          gamma_factor(gamma_factor) 
+    {
+        Float sigmaRad = Radians(sigma);
+        Float sigma2 = sigmaRad * sigmaRad;
+        A = 1 - (sigma2 / (2 * (sigma2 + 0.33f)));
+        B = 0.45f * sigma2 / (sigma2 + 0.09f);
+    }
+
+    PBRT_CPU_GPU
+    float Fresnel(float u) const {
+        return F0 + (1.0f - F0) * std::pow(1.0f - u, 5) - (F1 * u);
+    }
+
+    PBRT_CPU_GPU
+    float P22(float x) const {
+        if (alpha == 0)
+            return 1E30;
+        // std::numeric_limits<float>::max();
+        // Float result = std::exp(-1 * (x / alpha)) / std::pow(x + alpha * alpha, p);
+        // return result;
+
+        float exponent = -((alpha * alpha + x) / alpha);
+        float value =
+            gamma_factor * std::exp(exponent) / std::pow(x + (alpha * alpha), p);
+
+        return value;
+    }
+
+    PBRT_CPU_GPU
+    float SGD(float theta_h) const {
+        if (theta_h >= 0 && theta_h < Pi / 2.0f) {
+            float cosH = std::cos(theta_h);  // 1
+            float tanH = std::tan(theta_h);  // 0
+            auto value = InvPi / (cosH * cosH * cosH * cosH) * P22(tanH * tanH);
+            return value;
+        }
+        return 0.0f;
+    }
+
+    PBRT_CPU_GPU
+    float G1(float theta) const {
+        float theta_0 =
+            (Pi / 2.0f) - std::pow(std::log(1.0f + (1.0f / lambda)) / C, 1.0f / K);
+        if (theta > theta_0)
+            return 1.0f + (lambda * (1.0f - std::exp(C * std::pow(theta - theta_0, K))));
+        return 1.0f;
+    }
+
+    PBRT_CPU_GPU
+    SampledSpectrum f(Vector3f wo, Vector3f wi, TransportMode mode) const {
+        if (!SameHemisphere(wo, wi))
+            return SampledSpectrum(0.f);
+        Vector3f wh = wo + wi;
+        if (wh.x == 0 && wh.y == 0 && wh.z == 0)
+            return SampledSpectrum(0.0f);
+
+        // Specular part (Bagher)
+
+        wh = Normalize(wh);
+
+        float cosThetaH = AbsCosTheta(wh);
+        float cosThetaI = AbsCosTheta(wi);
+        float cosThetaO = AbsCosTheta(wo);
+
+        if (cosThetaI < 1e-6f || cosThetaO < 1e-6f)
+            return SampledSpectrum(0.0f);
+
+        float dotLH = AbsDot(wi, wh);
+
+        float theta_h = std::acos(Clamp(cosThetaH, -1, 1));
+        float theta_i = std::acos(Clamp(cosThetaI, -1, 1));
+        float theta_o = std::acos(Clamp(cosThetaO, -1, 1));
+
+        float F = Fresnel(dotLH);
+        float D = SGD(theta_h);
+        float G = G1(theta_i) * G1(theta_o);
+
+        // Diffuse part (Oren-Nayar)
+
+        Float sinThetaI = SinTheta(wi);
+        Float sinThetaO = SinTheta(wo);
+
+        Float maxCos = 0;
+        if (sinThetaI > 1e-4f && sinThetaO > 1e-4f) {
+            Float sinPhiI = SinPhi(wi), cosPhiI = CosPhi(wi);
+            Float sinPhiO = SinPhi(wo), cosPhiO = CosPhi(wo);
+            maxCos = std::max<Float>(0, cosPhiI * cosPhiO + sinPhiI * sinPhiO);
+        }
+
+        Float sinAlpha, tanBeta;
+        if (AbsCosTheta(wi) > AbsCosTheta(wo)) {
+            sinAlpha = sinThetaO;
+            tanBeta = sinThetaI / AbsCosTheta(wi);
+        } else {
+            sinAlpha = sinThetaI;
+            tanBeta = sinThetaO / AbsCosTheta(wo);
+        }
+
+        // Combining both Bagher and Oren-Nayar models
+
+        SampledSpectrum diffuse = rho_d * InvPi * (A + B * maxCos * sinAlpha * tanBeta);
+
+        SampledSpectrum specular =
+            (rho_s * InvPi) * (F * D * G / (cosThetaI * cosThetaO));
+
+        return diffuse + specular;
+    }
+
+    PBRT_CPU_GPU
+    pstd::optional<BSDFSample> Sample_f(Vector3f wo, Float uc, Point2f u,
+                                        TransportMode mode,
+                                        BxDFReflTransFlags sampleFlags) const {
+        Vector3f wi = SampleCosineHemisphere(u);
+        if (wo.z < 0)
+            wi.z *= -1;
+        Float pdf = CosineHemispherePDF(AbsCosTheta(wi));
+        return BSDFSample(f(wo, wi, mode), wi, pdf, BxDFFlags::DiffuseReflection);
+    }
+
+    PBRT_CPU_GPU
+    Float PDF(Vector3f wo, Vector3f wi, TransportMode mode,
+              BxDFReflTransFlags sampleFlags) const {
+        if (!SameHemisphere(wo, wi))
+            return 0;
+        return AbsCosTheta(wi) * InvPi;
+    }
+
+    PBRT_CPU_GPU
+    void Regularize() {}
+
+    PBRT_CPU_GPU
+    static constexpr const char *Name() { return "Bagher_OrenNayarBxDF"; }
+
+    PBRT_CPU_GPU
+    BxDFFlags Flags() const {
+        return BxDFFlags(BxDFFlags::Reflection | BxDFFlags::DiffuseReflection);
+    }
+
+    std::string ToString() const { return "Bagher_OrenNayarBxDF[]"; }
+
+  private:
+    Float p;
+    Float alpha;
+    Float lambda;
+    Float C;
+    Float K;
+    Float F0;
+    Float F1;
+    SampledSpectrum rho_d;
+    SampledSpectrum rho_s;
+    Float gamma_factor;
+    Float A, B;
+    };
+
+
 PBRT_CPU_GPU inline SampledSpectrum BxDF::f(Vector3f wo, Vector3f wi, TransportMode mode) const {
     auto f = [&](auto ptr) -> SampledSpectrum { return ptr->f(wo, wi, mode); };
     return Dispatch(f);
